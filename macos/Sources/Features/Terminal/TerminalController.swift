@@ -544,6 +544,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// changes, when a window is closed, and when tabs are reordered
     /// with the mouse.
     func relabelTabs() {
+        // Agent sidebar: this is upstream's funnel for tab membership/order
+        // changes (new tab, close, move, key change) — refresh sidebar rows.
+        AgentSidebarModel.shared.noteWindowListChanged()
+
         // We only listen for frame changes if we have more than 1 window,
         // otherwise the accessory view doesn't matter.
         tabListenForFrame = window?.tabbedWindows?.count ?? 0 > 1
@@ -1083,9 +1087,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         container.initialContentSize = focusedSurface?.initialSize
 
         // Agent sidebar: wrap the terminal content with the sidebar column.
+        // The sidebar lists this window frame's tab group, one row per tab.
         window.contentView = AgentSidebarContainerView(
             config: ghostty.config,
-            terminalContent: container)
+            terminalContent: container,
+            ownWindow: window)
 
         // If we have a default size, we want to apply it.
         if let defaultSize {

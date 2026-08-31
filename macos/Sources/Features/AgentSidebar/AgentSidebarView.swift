@@ -1,12 +1,15 @@
+import AppKit
 import SwiftUI
 
-/// The agent sidebar: one row per terminal window with a three-state
-/// agent status glyph. Colors come from the resolved Ghostty config so
-/// the panel always matches the main window theme.
+/// The agent sidebar: one row per tab in this window frame's tab group with
+/// a three-state agent status glyph. Colors come from the resolved Ghostty
+/// config so the panel always matches the main window theme.
 struct AgentSidebarView: View {
     @ObservedObject var model: AgentSidebarModel
-    /// The window this sidebar instance lives in, to highlight its own row.
-    let ownWindowID: ObjectIdentifier?
+    /// The window this sidebar instance lives in. Its tab group defines the
+    /// row list, and its own row is highlighted. Weak: the view must not
+    /// retain the window whose content view hosts it.
+    weak var ownWindow: NSWindow?
     /// The resolved Ghostty config; color properties read live from the C config.
     let config: Ghostty.Config
 
@@ -14,7 +17,7 @@ struct AgentSidebarView: View {
         let _ = model.windowListGeneration
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(model.rows) { row in
+                ForEach(model.rows(for: ownWindow)) { row in
                     rowView(row)
                 }
             }
@@ -33,7 +36,7 @@ struct AgentSidebarView: View {
     }
 
     private func rowView(_ row: AgentSidebarModel.Row) -> some View {
-        let selected = row.id == model.selectedRowID || row.id == ownWindowID
+        let selected = row.id == model.selectedRowID || row.window === ownWindow
         return Button(action: { model.focus(row) }) {
             HStack(spacing: 8) {
                 Circle()

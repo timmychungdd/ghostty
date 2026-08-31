@@ -64,8 +64,12 @@ class HiddenTitlebarTerminalWindow: TerminalWindow {
         standardWindowButton(.miniaturizeButton)?.isHidden = false
         standardWindowButton(.zoomButton)?.isHidden = false
 
-        // Disallow tabbing if the titlebar is hidden, since that will (should) also hide the tab bar.
-        tabbingMode = .disallowed
+        // Fork: tabbing stays enabled. Upstream sets `tabbingMode = .disallowed`
+        // here; the fork drops that so cmd+T creates a real native tab in this
+        // frame (TerminalWindow.awakeFromNib sets .preferred/.automatic, which
+        // this method no longer overrides). The native tab strip is force-hidden
+        // instead — the agent sidebar is the only tab chrome.
+        hideTabBarStrip()
 
         // It seems AppKit moves `NSScrollPocket` to the title bar on macOS 27.
         // We should hide it to prevent it covering terminal contents.
@@ -77,6 +81,46 @@ class HiddenTitlebarTerminalWindow: TerminalWindow {
            let themeFrame = contentView?.superview,
            let scrollPocket = themeFrame.firstDescendant(withClassName: "NSScrollPocket") {
             scrollPocket.isHidden = true
+        }
+    }
+
+    // MARK: Tab Strip Suppression (fork)
+
+    override func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {
+        super.addTitlebarAccessoryViewController(childViewController)
+
+        // AppKit reveals the native tab strip (an NSTabBar titlebar accessory)
+        // when a second tab joins the group. Re-hide it every time it appears.
+        if isTabBar(childViewController) {
+            hideTabBarStrip()
+        }
+    }
+
+    override func becomeKey() {
+        super.becomeKey()
+        hideTabBarStrip()
+    }
+
+    /// Force the native tab strip off. Two layers:
+    ///
+    /// 1. `toggleTabBar` flips the group's visibility state properly. It
+    ///    toggles, so guard on `isTabBarVisible` first.
+    /// 2. Hide the NSTabBar view itself, so nothing draws even while AppKit
+    ///    considers the strip visible.
+    ///
+    /// AppKit flips the strip visible on its own schedule after a tab joins
+    /// the group, so every hook re-checks on staggered delays rather than
+    /// once — the callers also run mid-AppKit-tab-machinery (accessory add,
+    /// title change), where toggling synchronously can re-enter.
+    func hideTabBarStrip() {
+        for delay in [0.0, 0.1, 0.3] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                self.tabBarView?.isHidden = true
+                if let group = self.tabGroup, group.isTabBarVisible {
+                    self.toggleTabBar(nil)
+                }
+            }
         }
     }
 

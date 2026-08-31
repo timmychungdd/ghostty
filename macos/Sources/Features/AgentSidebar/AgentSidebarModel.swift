@@ -53,9 +53,19 @@ final class AgentSidebarModel: ObservableObject {
 
     // MARK: - Rows
 
-    /// The current rows: one per terminal window, in screen order.
+    /// The global rows: one per terminal window, in screen order.
     var rows: [Row] {
         TerminalController.all.compactMap { $0.window }.map { Row(window: $0) }
+    }
+
+    /// Rows for one window frame: the terminal windows of its tab group, in
+    /// tab order. A solo window yields just itself; a nil or non-terminal
+    /// window yields the global list / nothing, respectively.
+    func rows(for window: NSWindow?) -> [Row] {
+        guard let window else { return rows }
+        return (window.tabGroup?.windows ?? [window])
+            .filter { $0.windowController is BaseTerminalController }
+            .map { Row(window: $0) }
     }
 
     /// Call when a terminal window is created so sidebars refresh.
@@ -87,15 +97,25 @@ final class AgentSidebarModel: ObservableObject {
 
     func focus(_ row: Row) {
         selectedRowID = row.id
-        row.window.makeKeyAndOrderFront(nil)
+        // In a tab group, select the tab — the frame stays put and the chosen
+        // window becomes key. Ungrouped windows come forward directly.
+        if let group = row.window.tabGroup, group.windows.contains(row.window) {
+            group.selectedWindow = row.window
+        } else {
+            row.window.makeKeyAndOrderFront(nil)
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// opt+cmd+left/right: cycle row selection and focus the selected window.
+    /// opt+cmd+left/right: cycle row selection within the key window's frame
+    /// (its tab group) and focus the selected tab.
     func cycle(_ delta: Int) {
-        let current = rows
+        let key = NSApp.keyWindow
+        let current = rows(for: key)
         guard !current.isEmpty else { return }
-        let index = current.firstIndex { $0.id == selectedRowID } ?? 0
+        let index = current.firstIndex { $0.id == selectedRowID }
+            ?? current.firstIndex { $0.window === key }
+            ?? 0
         let next = (index + delta + current.count) % current.count
         focus(current[next])
     }
