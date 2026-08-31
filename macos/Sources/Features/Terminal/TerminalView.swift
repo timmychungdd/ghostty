@@ -104,8 +104,11 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                         .frame(idealWidth: lastFocusedSurface?.value?.initialSize?.width,
                                idealHeight: lastFocusedSurface?.value?.initialSize?.height)
                 }
-                // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
-                .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
+                // Ignore safe area to extend up in to the titlebar region. Fork:
+                // every terminal window is hard-forced to the hidden-titlebar nib
+                // (TerminalController.windowNibName), so this is unconditional —
+                // the config's macos-titlebar-style no longer governs it.
+                .ignoresSafeArea(.container, edges: .top)
 
                 if let surfaceView = lastFocusedSurface?.value {
                     TerminalCommandPaletteView(

@@ -20,6 +20,9 @@ struct AgentSidebarView: View {
             }
             .padding(6)
         }
+        // Fork: the window is always hidden-titlebar, so extend rows into
+        // the invisible titlebar zone instead of insetting below it.
+        .ignoresSafeArea(.container, edges: .top)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(backgroundColor)
     }
