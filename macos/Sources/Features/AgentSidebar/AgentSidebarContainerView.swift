@@ -15,11 +15,13 @@ final class AgentSidebarContainerView: NSView {
     /// sidebar follows (all sidebars share one width).
     private static let widthDidChange = Notification.Name("AgentSidebarWidthDidChange")
 
-    private let sidebarView: NSView
+    private let sidebarView: NSHostingView<AgentSidebarView>
     private let terminalContent: NSView
     private let handle = DragHandleView()
     private let config: Ghostty.Config
+    private weak var ownWindow: NSWindow?
     private var widthObserver: NSObjectProtocol?
+    private var keyObserver: NSObjectProtocol?
 
     /// Sidebar column width in points.
     private var sidebarWidth: CGFloat
@@ -30,6 +32,7 @@ final class AgentSidebarContainerView: NSView {
     init(config: Ghostty.Config, terminalContent: NSView, ownWindow: NSWindow?) {
         self.terminalContent = terminalContent
         self.config = config
+        self.ownWindow = ownWindow
         let stored = UserDefaults.ghostty.double(forKey: Self.widthDefaultsKey)
         self.sidebarWidth = stored > 0 ? CGFloat(stored) : Self.defaultWidth
         self.sidebarView = NSHostingView(rootView: AgentSidebarView(
@@ -58,6 +61,26 @@ final class AgentSidebarContainerView: NSView {
         ) { [weak self] _ in
             self?.reloadPersistedWidth()
         }
+
+        // Reveal refresh: non-selected tab windows are parked offscreen by
+        // AppKit, and a parked window's hosting view can miss render passes
+        // for model updates that arrive while parked — on reveal it would
+        // show the row list from its last on-screen render (e.g. one row
+        // from when the window was solo). Rebuilding the root on every
+        // becomeKey forces a fresh render pass from current model state.
+        keyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: ownWindow, queue: .main
+        ) { [weak self] _ in
+            self?.refreshSidebarForReveal()
+        }
+    }
+
+    private func refreshSidebarForReveal() {
+        sidebarView.rootView = AgentSidebarView(
+            model: AgentSidebarModel.shared,
+            ownWindow: ownWindow,
+            config: config
+        )
     }
 
     required init?(coder: NSCoder) {
@@ -67,6 +90,9 @@ final class AgentSidebarContainerView: NSView {
     deinit {
         if let widthObserver {
             NotificationCenter.default.removeObserver(widthObserver)
+        }
+        if let keyObserver {
+            NotificationCenter.default.removeObserver(keyObserver)
         }
     }
 
