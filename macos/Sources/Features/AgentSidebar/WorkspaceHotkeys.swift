@@ -39,7 +39,10 @@ final class WorkspaceHotkeys {
         // minimal and pi is a pnpm shim that needs Tim's full environment.
         var left = Ghostty.SurfaceConfiguration()
         left.workingDirectory = baseDir
-        left.command = "/bin/zsh -lc yazi"
+        // -i matters: Tim's PATH (homebrew, ~/.local/bin) is set in .zshrc,
+        // which non-interactive login shells skip — GUI-launched Ghostty has
+        // only the launchd-minimal PATH, so without -i yazi/pi are not found.
+        left.command = "/bin/zsh -ilc yazi"
 
         // Tab into the current frame (the cmd+T path) so the workspace
         // becomes a new sidebar row in the SAME window. Parent = key window
@@ -62,7 +65,7 @@ final class WorkspaceHotkeys {
 
         var right = Ghostty.SurfaceConfiguration()
         right.workingDirectory = baseDir
-        right.command = "/bin/zsh -lc pi"
+        right.command = "/bin/zsh -ilc pi"
         // newSplit moves focus to the new (right) surface.
         guard controller.newSplit(at: initial, direction: .right, baseConfig: right) != nil else {
             return
