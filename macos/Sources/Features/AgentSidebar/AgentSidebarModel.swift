@@ -73,18 +73,20 @@ final class AgentSidebarModel: ObservableObject {
         DispatchQueue.main.async { self.windowListGeneration &+= 1 }
     }
 
-    /// Agent state for a window: highest-priority state across its surfaces.
-    func state(for window: NSWindow) -> RowState {
+    /// Agent states for a window: one entry per surface with a live session
+    /// (an entry in surfaceStates), sorted highest-priority first so a
+    /// display cap keeps the most important dots.
+    func states(for window: NSWindow) -> [RowState] {
         guard let controller = window.windowController as? BaseTerminalController else {
-            return .idle
+            return []
         }
-        var result: RowState = .idle
+        var result: [RowState] = []
         for leaf in controller.surfaceTree.root?.leaves() ?? [] {
             guard let surface = leaf.surface else { continue }
             let key = Self.surfaceKey(ghostty_surface_id(surface))
-            if let state = surfaceStates[key], state > result { result = state }
+            if let state = surfaceStates[key] { result.append(state) }
         }
-        return result
+        return result.sorted(by: >)
     }
 
     static func surfaceKey(_ id: UInt64) -> String {

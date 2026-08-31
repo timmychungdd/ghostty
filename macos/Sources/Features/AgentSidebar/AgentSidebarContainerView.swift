@@ -18,6 +18,7 @@ final class AgentSidebarContainerView: NSView {
     private let sidebarView: NSView
     private let terminalContent: NSView
     private let handle = DragHandleView()
+    private let config: Ghostty.Config
     private var widthObserver: NSObjectProtocol?
 
     /// Sidebar column width in points.
@@ -28,6 +29,7 @@ final class AgentSidebarContainerView: NSView {
 
     init(config: Ghostty.Config, terminalContent: NSView, ownWindow: NSWindow?) {
         self.terminalContent = terminalContent
+        self.config = config
         let stored = UserDefaults.ghostty.double(forKey: Self.widthDefaultsKey)
         self.sidebarWidth = stored > 0 ? CGFloat(stored) : Self.defaultWidth
         self.sidebarView = NSHostingView(rootView: AgentSidebarView(
@@ -86,6 +88,11 @@ final class AgentSidebarContainerView: NSView {
         handle.frame = NSRect(
             x: width, y: 0,
             width: Self.handleWidth, height: bounds.height)
+        // The handle strip must read as part of the sidebar: paint it the
+        // sidebar's background or the window's vibrancy bleeds through as a
+        // bright stripe. Config colors read live, so this tracks reloads.
+        handle.sidebarBackgroundColor = NSColor(config.backgroundColor)
+            .withAlphaComponent(config.backgroundOpacity)
         terminalContent.frame = NSRect(
             x: width + Self.handleWidth, y: 0,
             width: max(0, bounds.width - width - Self.handleWidth),
@@ -134,11 +141,17 @@ private final class DragHandleView: NSView {
     var onDrag: (_ delta: CGFloat) -> Void = { _ in }
     var onDragEnd: () -> Void = {}
 
+    /// Full-strip background matching the sidebar; set by the container.
+    var sidebarBackgroundColor: NSColor = .clear {
+        didSet { layer?.backgroundColor = sidebarBackgroundColor.cgColor }
+    }
+
     private let line = NSView()
     private var dragStartScreenX: CGFloat = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        wantsLayer = true
         line.wantsLayer = true
         line.layer?.backgroundColor = NSColor.separatorColor.cgColor
         addSubview(line)

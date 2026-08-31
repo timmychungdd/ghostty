@@ -39,9 +39,7 @@ struct AgentSidebarView: View {
         let selected = row.id == model.selectedRowID || row.window === ownWindow
         return Button(action: { model.focus(row) }) {
             HStack(spacing: 8) {
-                Circle()
-                    .fill(glyphColor(for: row))
-                    .frame(width: 8, height: 8)
+                dotsView(for: row)
                 Text(row.title)
                     .font(.callout)
                     .lineLimit(1)
@@ -61,8 +59,30 @@ struct AgentSidebarView: View {
         .buttonStyle(.plain)
     }
 
-    private func glyphColor(for row: AgentSidebarModel.Row) -> Color {
-        switch model.state(for: row.window) {
+    /// One dot per live agent session in the row's window (max 4,
+    /// highest-priority states first). A window with no live sessions shows
+    /// a single dim idle dot so the row never looks empty.
+    private func dotsView(for row: AgentSidebarModel.Row) -> some View {
+        let states = model.states(for: row.window)
+        return HStack(spacing: 3) {
+            if states.isEmpty {
+                dotView(.idle)
+            } else {
+                ForEach(Array(states.prefix(4).enumerated()), id: \.offset) { _, state in
+                    dotView(state)
+                }
+            }
+        }
+    }
+
+    private func dotView(_ state: AgentSidebarModel.RowState) -> some View {
+        Circle()
+            .fill(dotColor(for: state))
+            .frame(width: 8, height: 8)
+    }
+
+    private func dotColor(for state: AgentSidebarModel.RowState) -> Color {
+        switch state {
         case .working: return .blue
         case .needsYou: return .orange
         case .idle: return Color.secondary.opacity(0.5)

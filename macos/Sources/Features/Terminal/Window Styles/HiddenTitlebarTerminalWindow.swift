@@ -103,20 +103,24 @@ class HiddenTitlebarTerminalWindow: TerminalWindow {
 
     /// Force the native tab strip off. Two layers:
     ///
-    /// 1. `toggleTabBar` flips the group's visibility state properly. It
+    /// 1. Hide the tab bar's titlebar ACCESSORY. `isHidden` removes it from
+    ///    titlebar layout entirely, collapsing the space it reserves — hiding
+    ///    only the NSTabBar view leaves the reserved strip inflating the
+    ///    content's top safe-area inset.
+    /// 2. `toggleTabBar` flips the group's visibility state properly. It
     ///    toggles, so guard on `isTabBarVisible` first.
-    /// 2. Hide the NSTabBar view itself, so nothing draws even while AppKit
-    ///    considers the strip visible.
     ///
     /// AppKit flips the strip visible on its own schedule after a tab joins
     /// the group, so every hook re-checks on staggered delays rather than
     /// once — the callers also run mid-AppKit-tab-machinery (accessory add,
-    /// title change), where toggling synchronously can re-enter.
+    /// title change), where mutating synchronously can re-enter.
     func hideTabBarStrip() {
         for delay in [0.0, 0.1, 0.3] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
-                self.tabBarView?.isHidden = true
+                for accessory in self.titlebarAccessoryViewControllers where self.isTabBar(accessory) {
+                    accessory.isHidden = true
+                }
                 if let group = self.tabGroup, group.isTabBarVisible {
                     self.toggleTabBar(nil)
                 }
