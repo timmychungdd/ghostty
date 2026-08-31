@@ -56,6 +56,7 @@ final class AgentSidebarModel: ObservableObject {
         startListener()
         startKeyMonitor()
         observeWindowLifecycle()
+        WorkspaceHotkeys.shared.start()
     }
 
     // MARK: - Rows

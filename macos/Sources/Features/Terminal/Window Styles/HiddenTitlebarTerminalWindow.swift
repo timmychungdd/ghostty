@@ -124,6 +124,10 @@ class HiddenTitlebarTerminalWindow: TerminalWindow {
         for delay in [0.0, 0.1, 0.3] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
+                // Accessing titlebarAccessoryViewControllers throws for
+                // untitled windows; non-native fullscreen removes .titled
+                // while our staggered passes are still pending (that crash).
+                guard self.styleMask.contains(.titled) else { return }
                 for accessory in self.titlebarAccessoryViewControllers where self.isTabBar(accessory) {
                     accessory.isHidden = true
                 }
