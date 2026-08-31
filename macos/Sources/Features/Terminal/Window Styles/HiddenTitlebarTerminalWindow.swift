@@ -90,8 +90,14 @@ class HiddenTitlebarTerminalWindow: TerminalWindow {
         super.addTitlebarAccessoryViewController(childViewController)
 
         // AppKit reveals the native tab strip (an NSTabBar titlebar accessory)
-        // when a second tab joins the group. Re-hide it every time it appears.
+        // when a second tab joins the group. Hide it synchronously in this
+        // same runloop pass: an async-only hide lets AppKit commit at least
+        // one frame with the strip drawn (the flash Tim saw). isHidden on
+        // the accessory is not toggleTabBar — it touches no tab group state,
+        // so it is safe mid-AppKit-tab-machinery. The staggered async passes
+        // stay as backstop for AppKit's later re-flips.
         if isTabBar(childViewController) {
+            childViewController.isHidden = true
             hideTabBarStrip()
         }
     }
