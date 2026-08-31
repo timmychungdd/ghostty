@@ -55,21 +55,17 @@ class HiddenTitlebarTerminalWindow: TerminalWindow {
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
 
-        // Hide the traffic lights (window control buttons)
-        standardWindowButton(.closeButton)?.isHidden = true
-        standardWindowButton(.miniaturizeButton)?.isHidden = true
-        standardWindowButton(.zoomButton)?.isHidden = true
+        // Fork: keep the traffic lights visible. Upstream hides them (and
+        // nukes NSTitlebarContainerView below) for the hidden style; the
+        // fork wants the window buttons without the tab strip. With
+        // titleVisibility hidden + titlebarAppearsTransparent, the
+        // container draws nothing but the buttons.
+        standardWindowButton(.closeButton)?.isHidden = false
+        standardWindowButton(.miniaturizeButton)?.isHidden = false
+        standardWindowButton(.zoomButton)?.isHidden = false
 
         // Disallow tabbing if the titlebar is hidden, since that will (should) also hide the tab bar.
         tabbingMode = .disallowed
-
-        // Nuke it from orbit -- hide the titlebar container entirely, just in case. There are
-        // some operations that appear to bring back the titlebar visibility so this ensures
-        // it is gone forever.
-        if let themeFrame = contentView?.superview,
-           let titleBarContainer = themeFrame.firstDescendant(withClassName: "NSTitlebarContainerView") {
-            titleBarContainer.isHidden = true
-        }
 
         // It seems AppKit moves `NSScrollPocket` to the title bar on macOS 27.
         // We should hide it to prevent it covering terminal contents.

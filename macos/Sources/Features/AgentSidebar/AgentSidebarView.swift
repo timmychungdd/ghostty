@@ -20,9 +20,10 @@ struct AgentSidebarView: View {
             }
             .padding(6)
         }
-        // Fork: the window is always hidden-titlebar, so extend rows into
-        // the invisible titlebar zone instead of insetting below it.
-        .ignoresSafeArea(.container, edges: .top)
+        // Fork: no safe-area games here — with the traffic lights visible
+        // (HiddenTitlebarTerminalWindow fork edit), the window's top safe
+        // area covers the light zone and ScrollView insets rows below it
+        // automatically.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(backgroundColor)
     }
