@@ -1,6 +1,33 @@
 import AppKit
 import SwiftUI
 
+/// NSHostingView that reports when it (re)joins a live render loop:
+/// attached to a window and about to draw. Used to re-fire the sidebar's
+/// published invalidation at the exact moment it can be consumed.
+final class SidebarHostingView: NSHostingView<AgentSidebarView> {
+    var onLiveRenderLoopJoin: (() -> Void)?
+    /// Cooldown so draw storms cannot spam the generation counter.
+    private var lastJoinFire: Date = .distantPast
+
+    private func fireJoin() {
+        let now = Date()
+        guard now.timeIntervalSince(lastJoinFire) > 0.25 else { return }
+        lastJoinFire = now
+        sidebarDbg.log("[SIDEBAR-DBG] hosting view joined live render loop (win#\(self.window?.windowNumber ?? -1, privacy: .public)) -> generation bump")
+        onLiveRenderLoopJoin?()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { fireJoin() }
+    }
+
+    override func viewWillDraw() {
+        super.viewWillDraw()
+        if window != nil { fireJoin() }
+    }
+}
+
 /// Wraps a terminal window's content with the agent sidebar: a draggable-width
 /// column on the left, a thin divider handle, terminal content filling the
 /// rest. The width is shared across windows and persists across launches in
@@ -15,7 +42,7 @@ final class AgentSidebarContainerView: NSView {
     /// sidebar follows (all sidebars share one width).
     private static let widthDidChange = Notification.Name("AgentSidebarWidthDidChange")
 
-    private let sidebarView: NSHostingView<AgentSidebarView>
+    private var sidebarView: SidebarHostingView
     private let terminalContent: NSView
     private let handle = DragHandleView()
     private let config: Ghostty.Config
@@ -36,11 +63,20 @@ final class AgentSidebarContainerView: NSView {
         self.ownWindow = ownWindow
         let stored = UserDefaults.ghostty.double(forKey: Self.widthDefaultsKey)
         self.sidebarWidth = stored > 0 ? CGFloat(stored) : Self.defaultWidth
-        self.sidebarView = NSHostingView(rootView: AgentSidebarView(
+        self.sidebarView = SidebarHostingView(rootView: AgentSidebarView(
             model: AgentSidebarModel.shared,
             ownWindow: ownWindow,
             config: config
         ))
+        // The hosting view of a tab-group's FIRST window drops out of
+        // SwiftUI's render loop when the group forms; published
+        // invalidations fired while detached are discarded, so the sidebar
+        // keeps rendering its frozen solo snapshot on reveal. Bump the
+        // generation when the view re-attaches / is about to draw — the
+        // invalidation then lands inside a live render loop.
+        sidebarView.onLiveRenderLoopJoin = {
+            AgentSidebarModel.shared.noteWindowListChanged()
+        }
         sidebarDbg.log("[SIDEBAR-DBG] container init: ownWindow=\(ownWindow == nil ? "nil" : "win#\(ownWindow!.windowNumber)", privacy: .public)")
         super.init(frame: .zero)
         addSubview(sidebarView)
@@ -64,46 +100,52 @@ final class AgentSidebarContainerView: NSView {
             self?.reloadPersistedWidth()
         }
 
-        // Reveal refresh: non-selected tab windows are parked offscreen by
-        // AppKit, and a parked window's hosting view can miss render passes
-        // for model updates that arrive while parked — on reveal it would
-        // show the row list from its last on-screen render (e.g. one row
-        // from when the window was solo). Rebuilding the root on every
-        // becomeKey forces a fresh render pass from current model state.
+        // Reveal refresh. Instrumented Debug evidence (round 3): the
+        // hosting view of a tab-group's FIRST window never re-evaluates its
+        // SwiftUI body after the group forms — generation bumps, rootView
+        // reassignment, viewDidMoveToWindow, and viewWillDraw all fail to
+        // reach it while/revealed; its window backing store stays a frozen
+        // solo render until a full cycle away and back. The one path that
+        // provably yields a fresh evaluation is the creation path: a NEW
+        // hosting view added to a live window evaluates immediately. So on
+        // reveal, replace the hosting view with a fresh instance (and once
+        // more after AppKit's transition settles, coalesced).
         keyObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification, object: ownWindow, queue: .main
         ) { [weak self] _ in
-            self?.refreshSidebarForReveal()
+            guard let self else { return }
+            let winDesc = self.ownWindow == nil ? "nil" : "win#\(self.ownWindow!.windowNumber)"
+            sidebarDbg.log("[SIDEBAR-DBG] reveal: ownWindow=\(winDesc, privacy: .public) -> sidebar view swap")
+            self.replaceSidebarView("reveal")
+            self.revealWorkItem?.cancel()
+            let item = DispatchWorkItem { [weak self] in
+                sidebarDbg.log("[SIDEBAR-DBG] reveal settle+0.1s: ownWindow=\(winDesc, privacy: .public) -> sidebar view swap")
+                self?.replaceSidebarView("settle")
+            }
+            self.revealWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: item)
         }
     }
 
-    private func refreshSidebarForReveal() {
-        rebuildSidebarRoot("immediate")
-        // didBecomeKey fires mid-way through AppKit's tab-selection
-        // transition, and on the live on-screen path the tab group read can
-        // still be in flux at that instant (the live bug: the first reveal
-        // collapsed to one row while a later cycle — becomeKey after the
-        // transition settled — always rendered correctly). Rebuild again on
-        // the next runloop pass and once more shortly after, coalesced.
-        DispatchQueue.main.async { [weak self] in
-            self?.rebuildSidebarRoot("nextRunloop")
-        }
-        revealWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            self?.rebuildSidebarRoot("settle+0.1s")
-        }
-        revealWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: item)
-    }
-
-    private func rebuildSidebarRoot(_ reason: String) {
+    /// Swap in a fresh hosting view so the sidebar re-evaluates from current
+    /// model state — a new hosting view attached to a live window renders
+    /// immediately, which frozen parked-window hosting views never do.
+    private func replaceSidebarView(_ reason: String) {
         let winDesc = ownWindow == nil ? "nil" : "win#\(ownWindow!.windowNumber)"
-        sidebarDbg.log("[SIDEBAR-DBG] rebuildSidebarRoot(\(reason, privacy: .public)): ownWindow=\(winDesc, privacy: .public)")
-        sidebarView.rootView = AgentSidebarView(
+        sidebarDbg.log("[SIDEBAR-DBG] replaceSidebarView(\(reason, privacy: .public)): ownWindow=\(winDesc, privacy: .public)")
+        let fresh = SidebarHostingView(rootView: AgentSidebarView(
             model: AgentSidebarModel.shared,
             ownWindow: ownWindow,
             config: config
-        )
+        ))
+        fresh.onLiveRenderLoopJoin = {
+            AgentSidebarModel.shared.noteWindowListChanged()
+        }
+        sidebarView.removeFromSuperview()
+        sidebarView = fresh
+        addSubview(fresh, positioned: .below, relativeTo: handle)
+        needsLayout = true
+        layoutSubtreeIfNeeded()
     }
 
     required init?(coder: NSCoder) {

@@ -68,24 +68,61 @@ final class AgentSidebarModel: ObservableObject {
     /// Rows for one window frame: the terminal windows of its tab group, in
     /// tab order. A solo window yields just itself; a nil or non-terminal
     /// window yields the global list / nothing, respectively.
+    ///
+    /// Live-log evidence (round 2) showed window.tabGroup can read nil
+    /// transiently at tab-reveal time — the nil fallback then silently
+    /// yields one solo row (counts match, no anomaly). A group-keyed weak
+    /// cache covers the transient: any member's non-nil read refreshes the
+    /// whole group's membership and every member's group mapping, so a
+    /// parked window whose hosting view has not evaluated lately still
+    /// resolves its group. Self-heals on the next non-nil read.
     func rows(for window: NSWindow?) -> [Row] {
         guard let window else { return rows }
-        let result = (window.tabGroup?.windows ?? [window])
-            .filter { $0.windowController is BaseTerminalController }
-            .map { Row(window: $0) }
-        // Diagnostic for the tab-reveal row-collapse bug: log only when the
-        // row list disagrees with the group (a mid-transition snapshot).
-        let groupCount = window.tabGroup?.windows.count ?? 1
-        if result.count != groupCount {
-            sidebarDbg.log("[SIDEBAR-DBG] rows(for: win#\(window.windowNumber, privacy: .public)) ANOMALY: tabGroup=\(window.tabGroup == nil ? "nil" : "set", privacy: .public) groupCount=\(groupCount, privacy: .public) rowNums=\(result.map { String($0.window.windowNumber) }.joined(separator: ","), privacy: .public)")
+        if let group = window.tabGroup {
+            let gid = ObjectIdentifier(group)
+            let members = group.windows.filter { $0.windowController is BaseTerminalController }
+            windowsByGroup[gid] = members.map(WeakWindowBox.init)
+            for member in members {
+                groupByWindow[ObjectIdentifier(member)] = gid
+            }
+            let result = members.map { Row(window: $0) }
+            if result.count != group.windows.count {
+                sidebarDbg.log("[SIDEBAR-DBG] rows(for: win#\(window.windowNumber, privacy: .public)) ANOMALY: groupCount=\(group.windows.count, privacy: .public) rowNums=\(result.map { String($0.window.windowNumber) }.joined(separator: ","), privacy: .public)")
+            }
+            return result
         }
-        return result
+        // tabGroup read nil: serve the last known group if its members are
+        // still alive terminal windows, else the solo fallback. Logging only
+        // fires for windows that HAD a group — plain solo windows are quiet.
+        if let gid = groupByWindow[ObjectIdentifier(window)],
+           let cached = windowsByGroup[gid] {
+            let live = cached.compactMap(\.window).filter {
+                $0.windowController is BaseTerminalController
+            }
+            if live.count > 1 {
+                sidebarDbg.log("[SIDEBAR-DBG] rows(for: win#\(window.windowNumber, privacy: .public)) tabGroup=nil, cache hit rows=\(live.count, privacy: .public)")
+                return live.map { Row(window: $0) }
+            }
+            sidebarDbg.log("[SIDEBAR-DBG] rows(for: win#\(window.windowNumber, privacy: .public)) tabGroup=nil, cache stale -> solo row")
+        }
+        return [Row(window: window)]
     }
 
     /// Call when a terminal window is created so sidebars refresh.
     func noteWindowListChanged() {
         DispatchQueue.main.async { self.windowListGeneration &+= 1 }
     }
+
+    /// Weak box so the group cache never retains a closed window.
+    private final class WeakWindowBox {
+        weak var window: NSWindow?
+        init(_ window: NSWindow) { self.window = window }
+    }
+
+    /// tabGroup object id -> last known member list (weak, tab order).
+    private var windowsByGroup: [ObjectIdentifier: [WeakWindowBox]] = [:]
+    /// window id -> the tab group object it was last seen in.
+    private var groupByWindow: [ObjectIdentifier: ObjectIdentifier] = [:]
 
     /// Agent states for a window: one entry per surface with a live session
     /// (an entry in surfaceStates), sorted highest-priority first so a
