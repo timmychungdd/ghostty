@@ -3,6 +3,13 @@ import Combine
 import Darwin
 import Foundation
 import GhosttyKit
+import os
+
+/// Sidebar diagnostics channel. NSLog does not reach the unified log store
+/// for this app (stderr only), so use this Logger. Kept lean on purpose:
+/// rare lifecycle events plus the rows() anomaly check.
+/// Capture live: log stream --process ghostty --info | grep SIDEBAR-DBG
+let sidebarDbg = Logger(subsystem: "com.mitchellh.ghostty", category: "sidebar")
 
 /// AgentSidebarModel is the singleton state store behind the agent sidebar.
 /// It listens for pi lifecycle events on a unix socket, tracks per-surface
@@ -63,9 +70,16 @@ final class AgentSidebarModel: ObservableObject {
     /// window yields the global list / nothing, respectively.
     func rows(for window: NSWindow?) -> [Row] {
         guard let window else { return rows }
-        return (window.tabGroup?.windows ?? [window])
+        let result = (window.tabGroup?.windows ?? [window])
             .filter { $0.windowController is BaseTerminalController }
             .map { Row(window: $0) }
+        // Diagnostic for the tab-reveal row-collapse bug: log only when the
+        // row list disagrees with the group (a mid-transition snapshot).
+        let groupCount = window.tabGroup?.windows.count ?? 1
+        if result.count != groupCount {
+            sidebarDbg.log("[SIDEBAR-DBG] rows(for: win#\(window.windowNumber, privacy: .public)) ANOMALY: tabGroup=\(window.tabGroup == nil ? "nil" : "set", privacy: .public) groupCount=\(groupCount, privacy: .public) rowNums=\(result.map { String($0.window.windowNumber) }.joined(separator: ","), privacy: .public)")
+        }
+        return result
     }
 
     /// Call when a terminal window is created so sidebars refresh.
@@ -99,9 +113,11 @@ final class AgentSidebarModel: ObservableObject {
 
     func focus(_ row: Row) {
         selectedRowID = row.id
+        let group = row.window.tabGroup
+        sidebarDbg.log("[SIDEBAR-DBG] focus(win#\(row.window.windowNumber, privacy: .public)): tabGroup=\(group == nil ? "nil" : "set", privacy: .public) groupCount=\(group?.windows.count ?? -1, privacy: .public) branch=\((group?.windows.contains(row.window) ?? false) ? "group-selected" : "makeKey", privacy: .public)")
         // In a tab group, select the tab — the frame stays put and the chosen
         // window becomes key. Ungrouped windows come forward directly.
-        if let group = row.window.tabGroup, group.windows.contains(row.window) {
+        if let group = group, group.windows.contains(row.window) {
             group.selectedWindow = row.window
         } else {
             row.window.makeKeyAndOrderFront(nil)

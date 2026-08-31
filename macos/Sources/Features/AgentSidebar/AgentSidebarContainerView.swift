@@ -22,6 +22,7 @@ final class AgentSidebarContainerView: NSView {
     private weak var ownWindow: NSWindow?
     private var widthObserver: NSObjectProtocol?
     private var keyObserver: NSObjectProtocol?
+    private var revealWorkItem: DispatchWorkItem?
 
     /// Sidebar column width in points.
     private var sidebarWidth: CGFloat
@@ -40,6 +41,7 @@ final class AgentSidebarContainerView: NSView {
             ownWindow: ownWindow,
             config: config
         ))
+        sidebarDbg.log("[SIDEBAR-DBG] container init: ownWindow=\(ownWindow == nil ? "nil" : "win#\(ownWindow!.windowNumber)", privacy: .public)")
         super.init(frame: .zero)
         addSubview(sidebarView)
         addSubview(handle)
@@ -76,6 +78,27 @@ final class AgentSidebarContainerView: NSView {
     }
 
     private func refreshSidebarForReveal() {
+        rebuildSidebarRoot("immediate")
+        // didBecomeKey fires mid-way through AppKit's tab-selection
+        // transition, and on the live on-screen path the tab group read can
+        // still be in flux at that instant (the live bug: the first reveal
+        // collapsed to one row while a later cycle — becomeKey after the
+        // transition settled — always rendered correctly). Rebuild again on
+        // the next runloop pass and once more shortly after, coalesced.
+        DispatchQueue.main.async { [weak self] in
+            self?.rebuildSidebarRoot("nextRunloop")
+        }
+        revealWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.rebuildSidebarRoot("settle+0.1s")
+        }
+        revealWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: item)
+    }
+
+    private func rebuildSidebarRoot(_ reason: String) {
+        let winDesc = ownWindow == nil ? "nil" : "win#\(ownWindow!.windowNumber)"
+        sidebarDbg.log("[SIDEBAR-DBG] rebuildSidebarRoot(\(reason, privacy: .public)): ownWindow=\(winDesc, privacy: .public)")
         sidebarView.rootView = AgentSidebarView(
             model: AgentSidebarModel.shared,
             ownWindow: ownWindow,
@@ -88,6 +111,7 @@ final class AgentSidebarContainerView: NSView {
     }
 
     deinit {
+        revealWorkItem?.cancel()
         if let widthObserver {
             NotificationCenter.default.removeObserver(widthObserver)
         }
