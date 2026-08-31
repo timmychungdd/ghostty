@@ -41,10 +41,21 @@ final class WorkspaceHotkeys {
         left.workingDirectory = baseDir
         left.command = "/bin/zsh -lc yazi"
 
-        // With tabbingMode .preferred the new window may join the key
-        // window's frame as a native tab — either way it becomes a new
-        // sidebar row.
-        let controller = TerminalController.newWindow(delegate.ghostty, withBaseConfig: left)
+        // Tab into the current frame (the cmd+T path) so the workspace
+        // becomes a new sidebar row in the SAME window. Parent = key window
+        // when it's a terminal; otherwise the preferred parent (main window,
+        // else most recent) — keyWindow is nil while the app is inactive.
+        // With no terminal window at all this falls back to a fresh frame;
+        // a non-native-fullscreen parent gets the standard alert and no tab.
+        var parent = NSApp.keyWindow
+        if !(parent?.windowController is TerminalController) {
+            parent = TerminalController.preferredParent?.window
+        }
+        guard let controller = TerminalController.newTab(
+            delegate.ghostty,
+            from: parent,
+            withBaseConfig: left
+        ) else { return }
 
         guard let root = controller.surfaceTree.root,
               case .leaf(let initial) = root else { return }

@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "frost-backdrop-blurred.jpg",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

@@ -83,6 +83,20 @@ class TerminalWindow: NSWindow {
         // Notify that this terminal window has loaded
         NotificationCenter.default.post(name: Self.terminalDidAwake, object: self)
 
+        // Fork: frost backdrop on fullscreen enter/exit (both native and
+        // non-native post these notifications with a FullscreenBase object).
+        let center = NotificationCenter.default
+        center.addObserver(
+            self,
+            selector: #selector(fullscreenDidEnterFrost(_:)),
+            name: .fullscreenDidEnter,
+            object: nil)
+        center.addObserver(
+            self,
+            selector: #selector(fullscreenDidExitFrost(_:)),
+            name: .fullscreenDidExit,
+            object: nil)
+
         // This is fragile, but there doesn't seem to be an official API for customizing
         // native tab bar menus.
         tabMenuObserver = NotificationCenter.default.addObserver(
@@ -573,10 +587,43 @@ class TerminalWindow: NSWindow {
         standardWindowButton(.zoomButton)?.isHidden = true
     }
 
+    // MARK: - Frost Backdrop (fork)
+
+    /// Fork: fullscreen composites the window over a black void, which kills
+    /// the translucent-background frost. Pin a pre-blurred wallpaper image
+    /// behind the terminal content (and sidebar) for the duration of
+    /// fullscreen instead; windowed mode keeps real blur-through untouched.
+    private var frostBackdropView: NSImageView?
+
+    /// Cached so each fullscreen enter doesn't re-decode the 4K JPEG.
+    private static let frostBackdropImage = NSImage(named: "FrostBackdrop")
+
+    @objc private func fullscreenDidEnterFrost(_ notification: Notification) {
+        guard let fullscreen = notification.object as? FullscreenBase,
+              fullscreen.window == self else { return }
+        guard frostBackdropView == nil,
+              let image = Self.frostBackdropImage,
+              let contentView else { return }
+        let imageView = NSImageView(frame: contentView.bounds)
+        imageView.image = image
+        imageView.imageScaling = .scaleAxesIndependently
+        imageView.autoresizingMask = [.width, .height]
+        contentView.addSubview(imageView, positioned: .below, relativeTo: nil)
+        frostBackdropView = imageView
+    }
+
+    @objc private func fullscreenDidExitFrost(_ notification: Notification) {
+        guard let fullscreen = notification.object as? FullscreenBase,
+              fullscreen.window == self else { return }
+        frostBackdropView?.removeFromSuperview()
+        frostBackdropView = nil
+    }
+
     deinit {
         if let observer = tabMenuObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        NotificationCenter.default.removeObserver(self)
     }
 
     // MARK: Config
