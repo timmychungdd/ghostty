@@ -7,34 +7,11 @@ import GhosttyKit
 /// A classic, tabbed terminal experience.
 class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Controller {
     override var windowNibName: NSNib.Name? {
-        let defaultValue = "Terminal"
-
-        guard let appDelegate = NSApp.delegate as? AppDelegate else { return defaultValue }
-        let config = appDelegate.ghostty.config
-
-        // If we have no window decorations, there's no reason to do anything but
-        // the default titlebar (because there will be no titlebar).
-        if !config.windowDecorations {
-            return defaultValue
-        }
-
-        let nib = switch config.macosTitlebarStyle {
-        case .native: "Terminal"
-        case .hidden: "TerminalHiddenTitlebar"
-        case .transparent: "TerminalTransparentTitlebar"
-        case .tabs:
-#if compiler(>=6.2)
-            if #available(macOS 26.0, *) {
-                "TerminalTabsTitlebarTahoe"
-            } else {
-                "TerminalTabsTitlebarVentura"
-            }
-#else
-            "TerminalTabsTitlebarVentura"
-#endif
-        }
-
-        return nib
+        // Fork behavior (timmychungdd/ghostty sidebar-fork): the agent sidebar
+        // replaces the titlebar/tab strip, so every terminal window uses the
+        // hidden-titlebar style regardless of the configured style. The top
+        // bar is gone by construction.
+        return "TerminalHiddenTitlebar"
     }
 
     /// This is set to true when we care about frame changes. This is a small optimization since
@@ -1070,6 +1047,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         super.windowDidLoad()
         guard let window else { return }
 
+        // Agent sidebar: a new terminal window means a new row everywhere.
+        AgentSidebarModel.shared.noteWindowListChanged()
+
         // I copy this because we may change the source in the future but also because
         // I regularly audit our codebase for "ghostty.config" access because generally
         // you shouldn't use it. Its safe in this case because for a new window we should
@@ -1102,7 +1082,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // SwiftUI focus chain.
         container.initialContentSize = focusedSurface?.initialSize
 
-        window.contentView = container
+        // Agent sidebar: wrap the terminal content with the sidebar column.
+        window.contentView = AgentSidebarContainerView(
+            config: ghostty.config,
+            terminalContent: container)
 
         // If we have a default size, we want to apply it.
         if let defaultSize {
