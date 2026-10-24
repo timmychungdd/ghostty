@@ -230,7 +230,7 @@ extension Ghostty {
         override var acceptsFirstResponder: Bool { return true }
 
         /// Fork: the command this surface was launched with (if any), kept so
-        /// window restoration can relaunch it. Nil for default-shell surfaces.
+        /// WorkspaceStore can save it. Nil for default-shell surfaces.
         private(set) var launchCommand: String?
 
         /// Fork: the working directory this surface was launched with. The
@@ -392,8 +392,7 @@ extension Ghostty {
                 ]
             ) { [weak self] event in self?.localEventHandler(event) }
 
-            // Fork: remember the launch command so window restoration can
-            // relaunch (pi surfaces resume via --continue on decode).
+            // Fork: remember the launch command and directory for WorkspaceStore.
             self.launchCommand = baseConfig?.command
             self.launchDirectory = baseConfig?.workingDirectory
 
@@ -1878,20 +1877,6 @@ extension Ghostty {
             case uuid
             case title
             case isUserSetTitle
-            case launchCommand
-            case launchDirectory
-        }
-
-        /// Fork: command a restored surface should run. Pi sessions persist to
-        /// disk continuously, so a restored pi surface resumes the latest
-        /// session for its cwd (`pi --continue` starts fresh when none
-        /// exists). Only the fork's exact pi launcher is rewritten; any other
-        /// command relaunches verbatim.
-        private static func restoredCommand(from cmd: String) -> String {
-            if cmd == WorkspaceHotkeys.piCommand || cmd == WorkspaceHotkeys.piResumeCommand {
-                return WorkspaceHotkeys.piResumeCommand
-            }
-            return cmd
         }
 
         required convenience init(from decoder: Decoder) throws {
@@ -1905,14 +1890,9 @@ extension Ghostty {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             let uuid = UUID(uuidString: try container.decode(String.self, forKey: .uuid))
             var config = Ghostty.SurfaceConfiguration()
-            let decodedPwd = try container.decode(String?.self, forKey: .pwd)
-            let launchDir = try container.decodeIfPresent(String.self, forKey: .launchDirectory)
-            config.workingDirectory = decodedPwd ?? launchDir
+            config.workingDirectory = try container.decode(String?.self, forKey: .pwd)
             let savedTitle = try container.decodeIfPresent(String.self, forKey: .title)
             let isUserSetTitle = try container.decodeIfPresent(Bool.self, forKey: .isUserSetTitle) ?? false
-            if let savedCommand = try container.decodeIfPresent(String.self, forKey: .launchCommand) {
-                config.command = Self.restoredCommand(from: savedCommand)
-            }
 
             self.init(app, baseConfig: config, uuid: uuid)
 
@@ -1932,8 +1912,6 @@ extension Ghostty {
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
-            try container.encodeIfPresent(launchCommand, forKey: .launchCommand)
-            try container.encodeIfPresent(launchDirectory, forKey: .launchDirectory)
         }
     }
 }

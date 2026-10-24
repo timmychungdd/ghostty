@@ -64,6 +64,12 @@ private struct SidebarRowView: View {
                 .truncationMode(.middle)
                 .foregroundStyle(.primary)
             Spacer(minLength: 0)
+            if WorkspaceStore.shared.restoreFailed(window: row.window) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10 * scale))
+                    .foregroundStyle(.red)
+                    .help("Restore failed for a pane in this tab — see restore-report.json")
+            }
             if unread {
                 Circle()
                     .fill(Color.accentColor)

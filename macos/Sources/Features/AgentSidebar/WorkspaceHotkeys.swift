@@ -1,8 +1,7 @@
 import AppKit
 
-/// Fork feature: cmd+1/2/3/4/0 open preset workspace windows — cwd at a base
-/// directory, yazi in a 30%-width left split, pi in the 70% right split,
-/// focus on pi. Hardcoded, no config surface.
+/// Fork feature: cmd+1/2/3/4/0 open preset workspace windows — one pi pane
+/// with its cwd at a base directory. Hardcoded, no config surface.
 ///
 /// These keys override stock goto_tab (a libghostty default keybind): this
 /// local monitor consumes the event before the surface's key handling sees
@@ -10,18 +9,17 @@ import AppKit
 final class WorkspaceHotkeys {
     static let shared = WorkspaceHotkeys()
 
-    /// The commands workspace windows launch with. Windows created with one
-    /// of these stay restorable: restoration relaunches the command, and pi
-    /// resumes its on-disk session (see SurfaceView.restoredCommand).
-    // The pi commands end in `exec zsh -il`: pi owns the pane's process, so
-    // pi exiting (ctrl+D on empty editor, crash) would otherwise close the
-    // pane. Dropping into an interactive shell keeps the pane alive.
-    static let yaziCommand = "/bin/zsh -ilc yazi"
+    /// The command workspace panes launch with. It ends in `exec zsh -il`:
+    /// pi owns the pane's process, so pi exiting (ctrl+D on empty editor,
+    /// crash) would otherwise close the pane. Dropping into an interactive
+    /// shell keeps the pane alive.
     static let piCommand = "/bin/zsh -ilc \"pi; exec zsh -il\""
-    static let piResumeCommand = "/bin/zsh -ilc \"pi --continue; exec zsh -il\""
 
-    static func isWorkspaceCommand(_ cmd: String?) -> Bool {
-        cmd == yaziCommand || cmd == piCommand || cmd == piResumeCommand
+    /// The command a restored pane runs to reopen one exact pi session file
+    /// (WorkspaceStore). Same shell wrapper as `piCommand`.
+    static func piResumeCommand(sessionFile: String) -> String {
+        let quoted = "'" + sessionFile.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return "/bin/zsh -ilc \"pi --session \(quoted); exec zsh -il\""
     }
 
     /// ANSI keyCode -> base directory (1=18, 2=19, 3=20, 4=21, 0=29).
@@ -52,12 +50,11 @@ final class WorkspaceHotkeys {
 
         // Commands go through a login shell: the GUI-launched app's PATH is
         // minimal and pi is a pnpm shim that needs Tim's full environment.
-        var left = Ghostty.SurfaceConfiguration()
-        left.workingDirectory = baseDir
         // -i matters: Tim's PATH (homebrew, ~/.local/bin) is set in .zshrc,
-        // which non-interactive login shells skip — GUI-launched Ghostty has
-        // only the launchd-minimal PATH, so without -i yazi/pi are not found.
-        left.command = Self.yaziCommand
+        // which non-interactive login shells skip.
+        var config = Ghostty.SurfaceConfiguration()
+        config.workingDirectory = baseDir
+        config.command = Self.piCommand
 
         // Tab into the current frame (the cmd+T path) so the workspace
         // becomes a new sidebar row in the SAME window. Parent = key window
@@ -69,28 +66,6 @@ final class WorkspaceHotkeys {
         if !(parent?.windowController is TerminalController) {
             parent = TerminalController.preferredParent?.window
         }
-        guard let controller = TerminalController.newTab(
-            delegate.ghostty,
-            from: parent,
-            withBaseConfig: left
-        ) else { return }
-
-        guard let root = controller.surfaceTree.root,
-              case .leaf(let initial) = root else { return }
-
-        var right = Ghostty.SurfaceConfiguration()
-        right.workingDirectory = baseDir
-        right.command = Self.piCommand
-        // newSplit moves focus to the new (right) surface.
-        guard controller.newSplit(at: initial, direction: .right, baseConfig: right) != nil else {
-            return
-        }
-
-        // 30/70: yazi left third, pi the rest.
-        if let splitRoot = controller.surfaceTree.root {
-            controller.surfaceTree = SplitTree(
-                root: splitRoot.resizing(to: 0.3),
-                zoomed: controller.surfaceTree.zoomed)
-        }
+        _ = TerminalController.newTab(delegate.ghostty, from: parent, withBaseConfig: config)
     }
 }

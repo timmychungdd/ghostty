@@ -229,6 +229,10 @@ class AppDelegate: NSObject,
         // Initial config loading
         ghosttyConfigDidChange(config: ghostty.config)
 
+        // Fork: rebuild saved workspaces before the initial-window logic in
+        // applicationDidBecomeActive, which skips when windows exist.
+        WorkspaceStore.shared.restoreAtLaunch(ghostty)
+
         // Start our update checker.
         updateController.startUpdater()
 

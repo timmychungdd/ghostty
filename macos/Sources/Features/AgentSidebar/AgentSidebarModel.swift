@@ -380,8 +380,11 @@ final class AgentSidebarModel: ObservableObject {
 
     // MARK: - Unix socket listener
 
+    /// In the app's own support folder (keyed by bundle id) so a Debug build
+    /// runs beside the installed app; ghostty-agent.ts derives the same path
+    /// from the __CFBundleIdentifier env var.
     private static let socketPath =
-        NSHomeDirectory() + "/Library/Application Support/com.mitchellh.ghostty/agent-events.sock"
+        WorkspaceStore.supportDirectory.appendingPathComponent("agent-events.sock").path
 
     private func startListener() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -442,6 +445,9 @@ final class AgentSidebarModel: ObservableObject {
         let type: String
         let surface: String?
         let text: String?
+        let session: String?
+        let sessionFile: String?
+        let cwd: String?
     }
 
     private func handleLine(_ bytes: [UInt8]) {
@@ -454,6 +460,16 @@ final class AgentSidebarModel: ObservableObject {
                 return
             }
             guard let surface = event.surface, !surface.isEmpty else { return }
+            // Pi session identity feeds workspace save/restore.
+            switch event.type {
+            case "session_start":
+                WorkspaceStore.shared.sessionStarted(
+                    surface: surface, id: event.session, file: event.sessionFile, cwd: event.cwd)
+            case "session_end":
+                WorkspaceStore.shared.sessionEnded(surface: surface)
+            default:
+                break
+            }
             self.apply(type: event.type, surface: surface, text: event.text)
         }
     }
