@@ -1,6 +1,6 @@
 import AppKit
 
-/// Fork feature: cmd+1/2/3/0 open preset workspace windows — cwd at a base
+/// Fork feature: cmd+1/2/3/4/0 open preset workspace windows — cwd at a base
 /// directory, yazi in a 30%-width left split, pi in the 70% right split,
 /// focus on pi. Hardcoded, no config surface.
 ///
@@ -10,11 +10,26 @@ import AppKit
 final class WorkspaceHotkeys {
     static let shared = WorkspaceHotkeys()
 
-    /// ANSI keyCode -> base directory (1=18, 2=19, 3=20, 0=29).
+    /// The commands workspace windows launch with. Windows created with one
+    /// of these stay restorable: restoration relaunches the command, and pi
+    /// resumes its on-disk session (see SurfaceView.restoredCommand).
+    // The pi commands end in `exec zsh -il`: pi owns the pane's process, so
+    // pi exiting (ctrl+D on empty editor, crash) would otherwise close the
+    // pane. Dropping into an interactive shell keeps the pane alive.
+    static let yaziCommand = "/bin/zsh -ilc yazi"
+    static let piCommand = "/bin/zsh -ilc \"pi; exec zsh -il\""
+    static let piResumeCommand = "/bin/zsh -ilc \"pi --continue; exec zsh -il\""
+
+    static func isWorkspaceCommand(_ cmd: String?) -> Bool {
+        cmd == yaziCommand || cmd == piCommand || cmd == piResumeCommand
+    }
+
+    /// ANSI keyCode -> base directory (1=18, 2=19, 3=20, 4=21, 0=29).
     private static let workspaces: [UInt16: String] = [
         18: "/Users/tim.chung/Projects/agent-config",
         19: "/Users/tim.chung/Projects/wayfinder-support",
         20: "/Users/tim.chung/Projects/pedregal",
+        21: "/Users/tim.chung/Projects/auto-company",
         29: "/Users/tim.chung/Projects",
     ]
 
@@ -42,7 +57,7 @@ final class WorkspaceHotkeys {
         // -i matters: Tim's PATH (homebrew, ~/.local/bin) is set in .zshrc,
         // which non-interactive login shells skip — GUI-launched Ghostty has
         // only the launchd-minimal PATH, so without -i yazi/pi are not found.
-        left.command = "/bin/zsh -ilc yazi"
+        left.command = Self.yaziCommand
 
         // Tab into the current frame (the cmd+T path) so the workspace
         // becomes a new sidebar row in the SAME window. Parent = key window
@@ -65,7 +80,7 @@ final class WorkspaceHotkeys {
 
         var right = Ghostty.SurfaceConfiguration()
         right.workingDirectory = baseDir
-        right.command = "/bin/zsh -ilc pi"
+        right.command = Self.piCommand
         // newSplit moves focus to the new (right) surface.
         guard controller.newSplit(at: initial, direction: .right, baseConfig: right) != nil else {
             return

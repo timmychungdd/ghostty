@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// NSHostingView that reports when it (re)joins a live render loop:
@@ -8,6 +9,18 @@ final class SidebarHostingView: NSHostingView<AgentSidebarView> {
     var onLiveRenderLoopJoin: (() -> Void)?
     /// Cooldown so draw storms cannot spam the generation counter.
     private var lastJoinFire: Date = .distantPast
+
+    /// The sidebar takes keyboard focus on click so the model's key monitor
+    /// can route cmd+= / cmd+- by first responder: sidebar focused scales
+    /// the sidebar UI, terminal focused zooms the pane font. Row taps still
+    /// fire (super handles the SwiftUI click); clicking a pane hands focus
+    /// back to the surface.
+    override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
+    }
 
     private func fireJoin() {
         let now = Date()
@@ -45,11 +58,26 @@ final class AgentSidebarContainerView: NSView {
     private var sidebarView: SidebarHostingView
     private let terminalContent: NSView
     private let handle = DragHandleView()
-    private let config: Ghostty.Config
+    /// Swapped on config reload: Ghostty.App REPLACES its Config wrapper on
+    /// reload, so a config captured at init reads creation-time values
+    /// forever. Updated by `configObserver`.
+    private var config: Ghostty.Config
     private weak var ownWindow: NSWindow?
     private var widthObserver: NSObjectProtocol?
     private var keyObserver: NSObjectProtocol?
+    private var configObserver: NSObjectProtocol?
     private var revealWorkItem: DispatchWorkItem?
+    private var generationCancellable: AnyCancellable?
+    private var stateObserver: NSObjectProtocol?
+    /// The window's tab-group identity + membership at last check; a change
+    /// without a key change means the hosting view may be the parked one
+    /// that no longer re-evaluates, so it gets swapped for a fresh one.
+    private var lastKnownGroupKey: String?
+    /// State-event swap throttle: leading swap renders immediately when idle,
+    /// trailing swap coalesces bursts so tool-event spam cannot churn views.
+    private var lastSwap: Date = .distantPast
+    private var pendingStateSwap: DispatchWorkItem?
+    private static let stateSwapInterval: TimeInterval = 0.3
 
     /// Sidebar column width in points.
     private var sidebarWidth: CGFloat
@@ -85,6 +113,8 @@ final class AgentSidebarContainerView: NSView {
 
         handle.onDragStart = { [weak self] in
             guard let self else { return }
+            // Divider drags count as sidebar interaction for zoom routing.
+            self.window?.makeFirstResponder(self.sidebarView)
             self.dragStartWidth = self.sidebarWidth
         }
         handle.onDrag = { [weak self] delta in
@@ -125,14 +155,82 @@ final class AgentSidebarContainerView: NSView {
             self.revealWorkItem = item
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: item)
         }
+
+        lastKnownGroupKey = Self.groupKey(for: ownWindow)
+        lastSwap = Date()
+
+        // State events (dots, labels, unread) only reach the screen through
+        // a fresh hosting view — SwiftUI invalidation is discarded by these
+        // hosting views even while visible, so every applied event asks for
+        // a throttled swap.
+        stateObserver = NotificationCenter.default.addObserver(
+            forName: AgentSidebarModel.stateDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.throttledStateSwap()
+        }
+
+        // Group formation/dissolution can happen without this window ever
+        // seeing didBecomeKey (e.g. a tab added behind it), and the parked
+        // hosting view then keeps rendering a frozen snapshot. The window
+        // list generation bumps on window create/close, so re-check the
+        // group membership there and swap the view when it changed.
+        generationCancellable = AgentSidebarModel.shared.$windowListGeneration
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let key = Self.groupKey(for: self.ownWindow)
+                if key != self.lastKnownGroupKey {
+                    self.lastKnownGroupKey = key
+                    self.replaceSidebarView("group-change")
+                }
+            }
+
+        // Config reload: swap in the new Config wrapper and rebuild the
+        // sidebar view so colors track (the creation path provably
+        // re-evaluates; a stored stale wrapper never would). App-level
+        // posts carry object == nil; surface-targeted posts are ignored.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .ghosttyConfigDidChange, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, notification.object == nil else { return }
+            guard let newConfig = notification.userInfo?[
+                Notification.Name.GhosttyConfigChangeKey
+            ] as? Ghostty.Config else { return }
+            self.config = newConfig
+            self.replaceSidebarView("config-reload")
+        }
     }
 
     /// Swap in a fresh hosting view so the sidebar re-evaluates from current
     /// model state — a new hosting view attached to a live window renders
     /// immediately, which frozen parked-window hosting views never do.
+    /// Swap on a state event, throttled: leading swap if the last render is
+    /// older than the interval, else one trailing swap at the interval edge.
+    private func throttledStateSwap() {
+        let elapsed = Date().timeIntervalSince(lastSwap)
+        if elapsed >= Self.stateSwapInterval {
+            replaceSidebarView("state")
+        } else if pendingStateSwap == nil {
+            let item = DispatchWorkItem { [weak self] in
+                self?.pendingStateSwap = nil
+                self?.replaceSidebarView("state-trailing")
+            }
+            pendingStateSwap = item
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + (Self.stateSwapInterval - elapsed), execute: item)
+        }
+    }
+
+    /// "<group-id>:<member-count>" for grouped windows, "solo" otherwise.
+    private static func groupKey(for window: NSWindow?) -> String {
+        guard let window, let group = window.tabGroup else { return "solo" }
+        return "\(ObjectIdentifier(group)):\(group.windows.count)"
+    }
+
     private func replaceSidebarView(_ reason: String) {
         let winDesc = ownWindow == nil ? "nil" : "win#\(ownWindow!.windowNumber)"
         sidebarDbg.log("[SIDEBAR-DBG] replaceSidebarView(\(reason, privacy: .public)): ownWindow=\(winDesc, privacy: .public)")
+        lastSwap = Date()
         let fresh = SidebarHostingView(rootView: AgentSidebarView(
             model: AgentSidebarModel.shared,
             ownWindow: ownWindow,
@@ -154,11 +252,19 @@ final class AgentSidebarContainerView: NSView {
 
     deinit {
         revealWorkItem?.cancel()
+        pendingStateSwap?.cancel()
+        generationCancellable?.cancel()
+        if let stateObserver {
+            NotificationCenter.default.removeObserver(stateObserver)
+        }
         if let widthObserver {
             NotificationCenter.default.removeObserver(widthObserver)
         }
         if let keyObserver {
             NotificationCenter.default.removeObserver(keyObserver)
+        }
+        if let configObserver {
+            NotificationCenter.default.removeObserver(configObserver)
         }
     }
 

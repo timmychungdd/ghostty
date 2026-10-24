@@ -18,14 +18,25 @@ let sidebarDbg = Logger(subsystem: "com.mitchellh.ghostty", category: "sidebar")
 final class AgentSidebarModel: ObservableObject {
     static let shared = AgentSidebarModel()
 
-    /// Row status vocabulary (goal doc): exactly three states.
+    /// Row status vocabulary. `background` = agent settled but its session
+    /// still has background tasks running.
     enum RowState: Int, Comparable {
         case idle = 0
-        case working = 1
-        case needsYou = 2
+        case background = 1
+        case working = 2
+        case needsYou = 3
 
         static func < (lhs: RowState, rhs: RowState) -> Bool {
             lhs.rawValue < rhs.rawValue
+        }
+
+        var name: String {
+            switch self {
+            case .idle: return "idle"
+            case .background: return "background"
+            case .working: return "working"
+            case .needsYou: return "needsYou"
+            }
         }
     }
 
@@ -36,12 +47,33 @@ final class AgentSidebarModel: ObservableObject {
 
         var title: String {
             let t = window.title
-            return t.isEmpty ? "Terminal" : t
+            // Pi sets its terminal title to "π - <session> - <cwd>"; every
+            // workspace runs pi, so the π prefix is noise in the sidebar.
+            var stripped: String
+            if t.hasPrefix("π") {
+                let rest = t.dropFirst().drop(while: { $0 == " " || $0 == "-" })
+                stripped = rest.isEmpty ? "Terminal" : String(rest)
+            } else {
+                stripped = t.isEmpty ? "Terminal" : t
+            }
+            // Shell windows title with the full pwd ("~/Projects/x"); pi
+            // titles with the basename. Match pi: last path component.
+            if stripped.hasPrefix("/") || stripped.hasPrefix("~/"),
+               let last = stripped.split(separator: "/").last {
+                return String(last)
+            }
+            return stripped
         }
     }
 
     /// Surface id ("0x%016x") -> agent state, fed by the socket listener.
     @Published private(set) var surfaceStates: [String: RowState] = [:]
+
+    /// Surface id -> AI-generated row label, fed by `label` wire events.
+    @Published private(set) var surfaceLabels: [String: (text: String, at: Date)] = [:]
+
+    /// Windows with a needs-you transition the user has not seen yet.
+    @Published private(set) var unreadWindows: Set<ObjectIdentifier> = []
 
     /// Bump when the window list may have changed so views rebuild rows.
     @Published private(set) var windowListGeneration: UInt = 0
@@ -49,14 +81,46 @@ final class AgentSidebarModel: ObservableObject {
     /// Currently selected row for opt+cmd+arrow cycling.
     @Published private(set) var selectedRowID: ObjectIdentifier?
 
+    /// Current sidebar UI scale (cmd+= / cmd+- while the sidebar is
+    /// focused); multiplies dot, font, and padding sizes. With a terminal
+    /// surface focused the same keys keep upstream's font-size zoom — the
+    /// key monitor routes by first responder.
+    @Published private(set) var uiScale: CGFloat
+
+    /// Discrete scale steps; the index is persisted in UserDefaults.
+    private static let scaleSteps: [CGFloat] = [0.8, 1.0, 1.25, 1.5, 1.8]
+    private static let scaleDefaultsKey = "AgentSidebarUIScaleStep"
+
+    private var scaleStepIndex: Int {
+        didSet {
+            UserDefaults.ghostty.set(scaleStepIndex, forKey: Self.scaleDefaultsKey)
+            uiScale = Self.scaleSteps[scaleStepIndex]
+        }
+    }
+
     private var keyMonitor: Any?
     private var windowObservers: [NSObjectProtocol] = []
 
     private init() {
+        // Missing key reads as 0, so check object(forKey:) before trusting it.
+        let stored = UserDefaults.ghostty.integer(forKey: Self.scaleDefaultsKey)
+        let defaultIndex = Self.scaleSteps.firstIndex(of: 1.0) ?? 0
+        let index = (UserDefaults.ghostty.object(forKey: Self.scaleDefaultsKey) != nil
+            && Self.scaleSteps.indices.contains(stored)) ? stored : defaultIndex
+        scaleStepIndex = index
+        uiScale = Self.scaleSteps[index]
+
         startListener()
         startKeyMonitor()
         observeWindowLifecycle()
         WorkspaceHotkeys.shared.start()
+    }
+
+    /// Step the sidebar UI scale up (delta > 0) or down (delta < 0).
+    func adjustScale(_ delta: Int) {
+        let next = min(max(scaleStepIndex + delta, 0), Self.scaleSteps.count - 1)
+        guard next != scaleStepIndex else { return }
+        scaleStepIndex = next
     }
 
     // MARK: - Rows
@@ -151,6 +215,7 @@ final class AgentSidebarModel: ObservableObject {
 
     func focus(_ row: Row) {
         selectedRowID = row.id
+        unreadWindows.remove(row.id)
         let group = row.window.tabGroup
         sidebarDbg.log("[SIDEBAR-DBG] focus(win#\(row.window.windowNumber, privacy: .public)): tabGroup=\(group == nil ? "nil" : "set", privacy: .public) groupCount=\(group?.windows.count ?? -1, privacy: .public) branch=\((group?.windows.contains(row.window) ?? false) ? "group-selected" : "makeKey", privacy: .public)")
         // In a tab group, select the tab — the frame stays put and the chosen
@@ -176,18 +241,41 @@ final class AgentSidebarModel: ObservableObject {
         focus(current[next])
     }
 
-    // MARK: - Key monitor (opt+cmd+arrows)
+    /// Close a row's workspace through the standard close path: tab-close
+    /// coordination plus the running-process confirmation. Clicking the × on
+    /// a background row does not focus it first.
+    func closeWorkspace(_ row: Row) {
+        row.window.performClose(nil)
+    }
+
+    // MARK: - Key monitor (opt+cmd+arrows, cmd+= / cmd+-)
 
     private func startKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self,
-                  event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                      .isSuperset(of: [.option, .command]) else { return event }
-            switch Int(event.keyCode) {
-            case 123: self.cycle(-1); return nil  // left
-            case 124: self.cycle(1); return nil   // right
-            default: return event
+            guard let self else { return event }
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if mods.isSuperset(of: [.option, .command]) {
+                switch Int(event.keyCode) {
+                case 123: self.cycle(-1); return nil  // left
+                case 124: self.cycle(1); return nil   // right
+                default: return event
+                }
             }
+            // cmd+= / cmd+- (shift allowed so cmd+plus works): zoom follows
+            // focus. A focused terminal surface lets the event through to
+            // libghostty's increase/decrease_font_size binds; anything else
+            // (sidebar focused, window itself) scales the sidebar UI here.
+            if mods.contains(.command), !mods.contains(.option), !mods.contains(.control) {
+                switch Int(event.keyCode) {
+                case 24, 27:  // = / + and -
+                    let fr = (event.window ?? NSApp.keyWindow)?.firstResponder
+                    if fr is Ghostty.SurfaceView { return event }
+                    self.adjustScale(Int(event.keyCode) == 24 ? 1 : -1)
+                    return nil
+                default: return event
+                }
+            }
+            return event
         }
     }
 
@@ -210,24 +298,84 @@ final class AgentSidebarModel: ObservableObject {
             guard let self, let window = note.object as? NSWindow,
                   window.windowController is BaseTerminalController else { return }
             self.selectedRowID = ObjectIdentifier(window)
+            // Becoming key is the read receipt for the row's unread marker.
+            self.unreadWindows.remove(ObjectIdentifier(window))
         })
     }
 
     // MARK: - Event application
 
-    private func apply(type: String, surface: String) {
+    /// Posted on the main queue after any applied event mutates sidebar
+    /// state. Containers swap their hosting view in response: evidenced
+    /// repeatedly (2026-09-10 repro included) that @Published invalidation
+    /// NEVER re-evaluates these hosting views — only view creation renders.
+    static let stateDidChange = Notification.Name("AgentSidebarStateDidChange")
+
+    private func apply(type: String, surface: String, text: String? = nil) {
+        sidebarDbg.log("[SIDEBAR-DBG] apply \(type, privacy: .public) surface=\(surface, privacy: .public)")
         switch type {
         case "session_start":
             surfaceStates[surface] = .idle
         case "turn_start", "tool", "working":
-            surfaceStates[surface] = .working
+            setState(.working, for: surface)
         case "awaiting_input", "settled":
-            surfaceStates[surface] = .needsYou
+            setState(.needsYou, for: surface)
+        case "background":
+            setState(.background, for: surface)
+        case "label":
+            guard let text, !text.isEmpty else { return }
+            surfaceLabels[surface] = (text: text, at: Date())
         case "session_end":
             surfaceStates.removeValue(forKey: surface)
+            surfaceLabels.removeValue(forKey: surface)
         default:
             return
         }
+        NotificationCenter.default.post(name: Self.stateDidChange, object: nil)
+    }
+
+    /// State transition with unread bookkeeping: a surface that newly needs
+    /// attention while its window is not key marks the window unread. The
+    /// marker clears when the window becomes key (see observeWindowLifecycle)
+    /// or is focused through the sidebar.
+    private func setState(_ state: RowState, for surface: String) {
+        let old = surfaceStates[surface]
+        surfaceStates[surface] = state
+        guard state == .needsYou, old != .needsYou,
+              let window = window(forSurfaceKey: surface),
+              !window.isKeyWindow else { return }
+        unreadWindows.insert(ObjectIdentifier(window))
+    }
+
+    /// The window containing a surface, by walking every terminal window's
+    /// surface tree.
+    private func window(forSurfaceKey key: String) -> NSWindow? {
+        for controller in TerminalController.all {
+            guard let window = controller.window else { continue }
+            for leaf in controller.surfaceTree.root?.leaves() ?? [] {
+                guard let surface = leaf.surface else { continue }
+                if Self.surfaceKey(ghostty_surface_id(surface)) == key {
+                    return window
+                }
+            }
+        }
+        return nil
+    }
+
+    /// The AI-generated label for a window: the label of its surface with
+    /// the most recent label event, or nil when no surface has one.
+    func label(for window: NSWindow) -> String? {
+        guard let controller = window.windowController as? BaseTerminalController else {
+            return nil
+        }
+        var best: (text: String, at: Date)?
+        for leaf in controller.surfaceTree.root?.leaves() ?? [] {
+            guard let surface = leaf.surface else { continue }
+            let key = Self.surfaceKey(ghostty_surface_id(surface))
+            guard let label = surfaceLabels[key] else { continue }
+            if best == nil || label.at > best!.at { best = label }
+        }
+        return best?.text
     }
 
     // MARK: - Unix socket listener
@@ -292,14 +440,72 @@ final class AgentSidebarModel: ObservableObject {
 
     private struct WireEvent: Decodable {
         let type: String
-        let surface: String
+        let surface: String?
+        let text: String?
     }
 
     private func handleLine(_ bytes: [UInt8]) {
-        guard let event = try? JSONDecoder().decode(WireEvent.self, from: Data(bytes)),
-              !event.surface.isEmpty else { return }
+        guard let event = try? JSONDecoder().decode(WireEvent.self, from: Data(bytes)) else { return }
         DispatchQueue.main.async { [weak self] in
-            self?.apply(type: event.type, surface: event.surface)
+            guard let self else { return }
+            // "dump" carries no surface: it is a diagnostic, not agent state.
+            if event.type == "dump" {
+                self.dumpSidebars()
+                return
+            }
+            guard let surface = event.surface, !surface.isEmpty else { return }
+            self.apply(type: event.type, surface: surface, text: event.text)
+        }
+    }
+
+    // MARK: - Diagnostics (dump)
+
+    /// Diagnostic entry point for the "dump" wire event: render every
+    /// terminal window's sidebar view to /tmp/ghostty-sidebar-<win#>.png and
+    /// write /tmp/ghostty-sidebar-dump.json with the model's row state.
+    /// Self-rendered, so unlike screencapture it needs no TCC grants; the
+    /// only pixel path available to headless validation.
+    private func dumpSidebars() {
+        var entries: [[String: Any]] = []
+        for controller in TerminalController.all {
+            guard let window = controller.window else { continue }
+            let num = window.windowNumber
+            var entry: [String: Any] = [
+                "window": num,
+                "title": Row(window: window).title,
+                "states": states(for: window).map { $0.name },
+                "isKey": window.isKeyWindow,
+                "selected": selectedRowID == ObjectIdentifier(window),
+            ]
+                entry["label"] = label(for: window) ?? NSNull()
+            entry["unread"] = unreadWindows.contains(ObjectIdentifier(window))
+            // Own-window CGWindowList capture: exact on-screen pixels, and
+            // no Screen Recording grant needed for one's own windows.
+            let path = "/tmp/ghostty-sidebar-\(num).png"
+            entry["png"] = Self.captureWindow(num, to: URL(fileURLWithPath: path)) ? path : "FAILED"
+
+            entries.append(entry)
+        }
+        let url = URL(fileURLWithPath: "/tmp/ghostty-sidebar-dump.json")
+        if let data = try? JSONSerialization.data(
+            withJSONObject: entries, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: url)
+        }
+        sidebarDbg.log("[SIDEBAR-DBG] dump: \(entries.count, privacy: .public) windows -> /tmp/ghostty-sidebar-dump.json")
+    }
+
+    private static func captureWindow(_ windowNumber: Int, to url: URL) -> Bool {
+        guard let image = CGWindowListCreateImage(
+            .null, .optionIncludingWindow, CGWindowID(windowNumber),
+            [.boundsIgnoreFraming, .bestResolution]
+        ) else { return false }
+        let rep = NSBitmapImageRep(cgImage: image)
+        guard let data = rep.representation(using: .png, properties: [:]) else { return false }
+        do {
+            try data.write(to: url)
+            return true
+        } catch {
+            return false
         }
     }
 }
