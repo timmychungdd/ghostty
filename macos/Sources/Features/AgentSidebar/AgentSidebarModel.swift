@@ -311,6 +311,11 @@ final class AgentSidebarModel: ObservableObject {
     /// NEVER re-evaluates these hosting views — only view creation renders.
     static let stateDidChange = Notification.Name("AgentSidebarStateDidChange")
 
+    /// Workspace restore: show a pane's saved label before pi reports one.
+    func restoreLabel(_ text: String, for surface: String) {
+        apply(type: "label", surface: surface, text: text)
+    }
+
     private func apply(type: String, surface: String, text: String? = nil) {
         sidebarDbg.log("[SIDEBAR-DBG] apply \(type, privacy: .public) surface=\(surface, privacy: .public)")
         switch type {

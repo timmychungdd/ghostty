@@ -72,6 +72,8 @@ final class WorkspaceStore {
         var command: String?
         /// Set when pi runs in the pane; restore reopens this exact session.
         var piSession: PiSession?
+        /// The sidebar row label at save time; restore shows it before pi starts.
+        var label: String?
         var focused: Bool
     }
 
@@ -293,6 +295,10 @@ final class WorkspaceStore {
             } else {
                 config.command = pane.command
             }
+            // Pi starts from the saved label instead of naming the row again.
+            if let label = pane.label {
+                config.environmentVariables["GHOSTTY_AGENT_LABEL"] = label
+            }
             let view = Ghostty.SurfaceView(app, baseConfig: config)
             if pane.focused { focused = view }
 
@@ -306,6 +312,9 @@ final class WorkspaceStore {
                 // Pre-seed so a save before pi starts still records the session.
                 piSessions[key] = session
                 pendingVerification[key] = report!.panes.count - 1
+            }
+            if let label = pane.label {
+                AgentSidebarModel.shared.restoreLabel(label, for: key)
             }
             return .leaf(view: view)
         }
@@ -465,13 +474,17 @@ final class WorkspaceStore {
         switch node {
         case .leaf(let view):
             var session: PiSession?
+            var label: String?
             if let surface = view.surface {
-                session = piSessions[AgentSidebarModel.surfaceKey(ghostty_surface_id(surface))]
+                let key = AgentSidebarModel.surfaceKey(ghostty_surface_id(surface))
+                session = piSessions[key]
+                label = AgentSidebarModel.shared.surfaceLabels[key]?.text
             }
             return Node(pane: Pane(
                 cwd: session?.cwd ?? view.pwd ?? view.launchDirectory,
                 command: Self.savedCommand(view.launchCommand),
                 piSession: session,
+                label: label,
                 focused: view === focused))
         case .split(let split):
             return Node(
