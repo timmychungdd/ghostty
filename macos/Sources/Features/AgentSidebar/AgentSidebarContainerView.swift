@@ -58,6 +58,7 @@ final class AgentSidebarContainerView: NSView {
     private var sidebarView: SidebarHostingView
     private let terminalContent: NSView
     private let handle = DragHandleView()
+    private let dragStrip = WindowDragStripView()
     /// Swapped on config reload: Ghostty.App REPLACES its Config wrapper on
     /// reload, so a config captured at init reads creation-time values
     /// forever. Updated by `configObserver`.
@@ -110,6 +111,9 @@ final class AgentSidebarContainerView: NSView {
         addSubview(sidebarView)
         addSubview(handle)
         addSubview(terminalContent)
+        // Above the terminal: the surface swallows clicks in the hidden
+        // titlebar zone, so this strip gives the window its drag area back.
+        addSubview(dragStrip)
 
         handle.onDragStart = { [weak self] in
             guard let self else { return }
@@ -274,6 +278,12 @@ final class AgentSidebarContainerView: NSView {
         return size
     }
 
+    // The drag strip's height comes from the window's titlebar.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        needsLayout = true
+    }
+
     override func layout() {
         super.layout()
         // A shrunken window can push the sidebar past the 50% max; clamp here.
@@ -295,6 +305,12 @@ final class AgentSidebarContainerView: NSView {
             x: width + Self.handleWidth, y: 0,
             width: max(0, bounds.width - width - Self.handleWidth),
             height: bounds.height)
+        // The strip covers the hidden titlebar's height over the terminal;
+        // native fullscreen has no titlebar, so the strip collapses to 0.
+        let titlebarHeight = window.map { max(0, $0.frame.height - $0.contentLayoutRect.height) } ?? 0
+        dragStrip.frame = NSRect(
+            x: terminalContent.frame.minX, y: bounds.height - titlebarHeight,
+            width: terminalContent.frame.width, height: titlebarHeight)
     }
 
     // MARK: - Width
@@ -328,6 +344,26 @@ final class AgentSidebarContainerView: NSView {
         sidebarWidth = newWidth
         invalidateIntrinsicContentSize()
         needsLayout = true
+    }
+}
+
+/// Transparent strip over the top of the terminal that moves the window like
+/// a titlebar: drag moves it, double-click follows the system "double-click a
+/// window's title bar" setting (zoom, minimize, or nothing).
+private final class WindowDragStripView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        guard event.clickCount == 2 else {
+            window.performDrag(with: event)
+            return
+        }
+        switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+        case "Minimize": window.performMiniaturize(nil)
+        case "None": break
+        default: window.performZoom(nil)
+        }
     }
 }
 
