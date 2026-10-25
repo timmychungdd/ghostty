@@ -1371,6 +1371,14 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     @IBAction override func closeWindow(_ sender: Any?) {
         guard let window = window else { return }
 
+        // Fork: closing the last terminal window quits Ghostty, so the
+        // workspace exit prompt runs and the next launch can restore.
+        let group = window.tabGroup?.windows ?? [window]
+        if TerminalController.all.allSatisfy({ $0.window.map(group.contains) ?? false }) {
+            NSApp.terminate(nil)
+            return
+        }
+
         // We need to check all the windows in our tab group for confirmation
         // if we're closing the window. If we don't have a tabgroup for any
         // reason we check ourselves.

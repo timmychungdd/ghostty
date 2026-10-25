@@ -417,6 +417,12 @@ class AppDelegate: NSObject,
             }
         }
 
+        // Fork: with terminal windows open, the workspace prompt replaces the
+        // upstream quit confirmation — its Cancel is the confirmation.
+        if !TerminalController.all.isEmpty {
+            return WorkspaceStore.shared.promptOnExit() ? .terminateNow : .terminateCancel
+        }
+
         // If our app says we don't need to confirm, we can exit now.
         if !ghostty.needsConfirmQuit { return .terminateNow }
 

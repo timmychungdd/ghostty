@@ -359,6 +359,45 @@ final class WorkspaceStore {
         try! encoder.encode(report).write(to: Self.reportURL, options: .atomic)
     }
 
+    // MARK: - Exit prompt
+
+    /// Asks whether to keep the current windows for next launch. Save
+    /// writes the final snapshot and freezes it; Don't Save deletes
+    /// `workspaces.json` so the next launch opens one blank window. Returns
+    /// false on Cancel: the caller keeps Ghostty running.
+    func promptOnExit() -> Bool {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Save these windows for next launch?"
+        alert.informativeText = "Running processes in every window will be terminated."
+        alert.addButton(withTitle: "Save Windows")
+        let dontSave = alert.addButton(withTitle: "Don't Save")
+        dontSave.keyEquivalent = "d"
+        dontSave.keyEquivalentModifierMask = [.command]
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            save()
+            freeze()
+            storeLog.info("exit prompt: saved windows for next launch")
+            return true
+        case .alertSecondButtonReturn:
+            freeze()
+            if FileManager.default.fileExists(atPath: Self.stateURL.path) {
+                try! FileManager.default.removeItem(at: Self.stateURL)
+            }
+            storeLog.info("exit prompt: discarded saved windows")
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func freeze() {
+        frozen = true
+        timer?.invalidate()
+    }
+
     // MARK: - Save
 
     private func startSaving() {
@@ -372,8 +411,7 @@ final class WorkspaceStore {
             // Final save, then stop: windows torn down during termination
             // must not overwrite the state they are about to lose.
             self.save()
-            self.frozen = true
-            self.timer?.invalidate()
+            self.freeze()
         }
     }
 
