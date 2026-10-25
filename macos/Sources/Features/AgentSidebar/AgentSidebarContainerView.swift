@@ -278,7 +278,7 @@ final class AgentSidebarContainerView: NSView {
         return size
     }
 
-    // The drag strip's height comes from the window's titlebar.
+    // Relayout once attached: the fullscreen check reads the window.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         needsLayout = true
@@ -305,12 +305,15 @@ final class AgentSidebarContainerView: NSView {
             x: width + Self.handleWidth, y: 0,
             width: max(0, bounds.width - width - Self.handleWidth),
             height: bounds.height)
-        // The strip covers the hidden titlebar's height over the terminal;
-        // native fullscreen has no titlebar, so the strip collapses to 0.
-        let titlebarHeight = window.map { max(0, $0.frame.height - $0.contentLayoutRect.height) } ?? 0
+        // The strip covers the standard 28pt titlebar height over the
+        // terminal. The window's own titlebar measurement reads 0 under the
+        // hidden style (live check, 2026-10-25), so the height is fixed.
+        // Fullscreen (native or not) has no titlebar to stand in for.
+        let fullscreen = (window?.windowController as? BaseTerminalController)?.fullscreenStyle?.isFullscreen ?? false
+        let stripHeight: CGFloat = fullscreen ? 0 : 28
         dragStrip.frame = NSRect(
-            x: terminalContent.frame.minX, y: bounds.height - titlebarHeight,
-            width: terminalContent.frame.width, height: titlebarHeight)
+            x: terminalContent.frame.minX, y: bounds.height - stripHeight,
+            width: terminalContent.frame.width, height: stripHeight)
     }
 
     // MARK: - Width
