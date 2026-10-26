@@ -114,6 +114,7 @@ final class AgentSidebarModel: ObservableObject {
         startKeyMonitor()
         observeWindowLifecycle()
         WorkspaceHotkeys.shared.start()
+        AgentSessionMenu.shared.start()
     }
 
     /// Step the sidebar UI scale up (delta > 0) or down (delta < 0).
@@ -354,7 +355,7 @@ final class AgentSidebarModel: ObservableObject {
 
     /// The window containing a surface, by walking every terminal window's
     /// surface tree.
-    private func window(forSurfaceKey key: String) -> NSWindow? {
+    func window(forSurfaceKey key: String) -> NSWindow? {
         for controller in TerminalController.all {
             guard let window = controller.window else { continue }
             for leaf in controller.surfaceTree.root?.leaves() ?? [] {
@@ -462,6 +463,7 @@ final class AgentSidebarModel: ObservableObject {
             // "dump" carries no surface: it is a diagnostic, not agent state.
             if event.type == "dump" {
                 self.dumpSidebars()
+                AgentSessionMenu.shared.dump()
                 return
             }
             guard let surface = event.surface, !surface.isEmpty else { return }
