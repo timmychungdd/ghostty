@@ -221,7 +221,8 @@ final class AgentSessionMenu: NSObject, NSMenuDelegate {
         menuWillOpen(menu)
         func items(_ menu: NSMenu) -> [[String: Any]] {
             menu.items.map { item in
-                var entry: [String: Any] = ["title": item.isSeparatorItem ? "---" : item.title, "enabled": item.isEnabled]
+                let title = (item.view as? StayOpenMenuItemView)?.title ?? item.title
+                var entry: [String: Any] = ["title": item.isSeparatorItem ? "---" : title, "enabled": item.isEnabled]
                 if let submenu = item.submenu { entry["submenu"] = items(submenu) }
                 return entry
             }
@@ -262,8 +263,29 @@ final class AgentSessionMenu: NSObject, NSMenuDelegate {
             if !hasFile { move.title = "Move to Ghostty Tab (no conversation yet)" }
             submenu.addItem(move)
         }
-        submenu.addItem(action("End Session", #selector(endSession(_:)), record))
+        submenu.addItem(endItem(record, row: item))
         item.submenu = submenu
+        return item
+    }
+
+    /// End Session keeps the menu open (Tim, 2026-10-26: ending several
+    /// sessions in a row). A click on a menu item's custom view does not
+    /// dismiss the menu; a plain menu item's action does.
+    private func endItem(_ record: Record, row: NSMenuItem) -> NSMenuItem {
+        let item = NSMenuItem()
+        let view = StayOpenMenuItemView(title: "End Session")
+        view.onClick = { [weak self, weak row] view in
+            guard let self else { return }
+            view.title = "Ending…"
+            view.isEnabled = false
+            row?.title = "\(record.title) · \(record.folder) · ending"
+            self.terminate(record) {
+                view.title = "Ended"
+                row?.title = "\(record.title) · \(record.folder) · ended"
+                row?.image = Self.stateImage("ended")
+            }
+        }
+        item.view = view
         return item
     }
 
@@ -297,6 +319,7 @@ final class AgentSessionMenu: NSObject, NSMenuDelegate {
         case "working": color = .systemBlue
         case "needs-input": color = .systemOrange
         case "background": color = .systemPurple
+        case "ended": color = .tertiaryLabelColor
         default: color = .systemGray
         }
         let config = NSImage.SymbolConfiguration(paletteColors: [color])
@@ -326,11 +349,6 @@ final class AgentSessionMenu: NSObject, NSMenuDelegate {
         AgentSidebarModel.shared.focus(AgentSidebarModel.Row(window: window))
     }
 
-    @objc private func endSession(_ sender: NSMenuItem) {
-        guard let record = sender.representedObject as? Record else { return }
-        terminate(record)
-    }
-
     @objc private func endIdleBackground(_ sender: NSMenuItem) {
         guard let records = sender.representedObject as? [Record], !records.isEmpty else { return }
         let alert = NSAlert()
@@ -340,15 +358,32 @@ final class AgentSessionMenu: NSObject, NSMenuDelegate {
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        records.forEach(terminate)
+        records.forEach { terminate($0) }
     }
 
-    private func terminate(_ record: Record) {
+    /// SIGTERM, then `exited` on the main queue once the pid is gone (up to
+    /// 10 seconds). The main queue runs while a menu is tracking, so an open
+    /// menu updates in place.
+    private func terminate(_ record: Record, exited: (() -> Void)? = nil) {
         if kill(record.pid, SIGTERM) != 0 {
             let message = String(cString: strerror(errno))
             fail("Could not end \(record.title) (pid \(record.pid)): \(message)")
+            return
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.refreshTitle() }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let deadline = Date().addingTimeInterval(10)
+            while Self.isAlive(record.pid), Date() < deadline { usleep(100_000) }
+            let stillAlive = Self.isAlive(record.pid)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.refreshTitle()
+                if stillAlive {
+                    menuLog.error("\(record.title, privacy: .public) (pid \(record.pid)) did not exit within 10 seconds of SIGTERM")
+                    return
+                }
+                exited?()
+            }
+        }
     }
 
     @objc private func moveToTab(_ sender: NSMenuItem) {
@@ -399,6 +434,7 @@ final class AgentSessionMenu: NSObject, NSMenuDelegate {
     }
 
     private func fail(_ message: String) {
+        statusItem?.menu?.cancelTracking()
         menuLog.error("\(message, privacy: .public)")
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -406,5 +442,52 @@ final class AgentSessionMenu: NSObject, NSMenuDelegate {
         alert.informativeText = message
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
+    }
+}
+
+/// A menu item row drawn like a standard item whose click runs `onClick`
+/// without closing the menu. AppKit sets the enclosing item's highlight on
+/// hover and redraws the view.
+private final class StayOpenMenuItemView: NSView {
+    var onClick: ((StayOpenMenuItemView) -> Void)?
+    var isEnabled = true { didSet { needsDisplay = true } }
+    var title: String {
+        get { label.stringValue }
+        set { label.stringValue = newValue }
+    }
+
+    private let label = NSTextField(labelWithString: "")
+
+    init(title: String) {
+        super.init(frame: NSRect(x: 0, y: 0, width: 220, height: 22))
+        autoresizingMask = [.width]
+        label.stringValue = title
+        label.font = .menuFont(ofSize: 0)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 22),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    private var highlighted: Bool { isEnabled && enclosingMenuItem?.isHighlighted == true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if highlighted {
+            NSColor.selectedContentBackgroundColor.setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 5, dy: 0), xRadius: 4, yRadius: 4).fill()
+        }
+        label.textColor = !isEnabled ? .disabledControlTextColor
+            : highlighted ? .selectedMenuItemTextColor : .controlTextColor
+        super.draw(dirtyRect)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard isEnabled else { return }
+        onClick?(self)
     }
 }
