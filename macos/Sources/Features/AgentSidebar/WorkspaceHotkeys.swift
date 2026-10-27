@@ -9,17 +9,20 @@ import AppKit
 final class WorkspaceHotkeys {
     static let shared = WorkspaceHotkeys()
 
-    /// The command workspace panes launch with. It ends in `exec zsh -il`:
-    /// pi owns the pane's process, so pi exiting (ctrl+D on empty editor,
-    /// crash) would otherwise close the pane. Dropping into an interactive
-    /// shell keeps the pane alive.
-    static let piCommand = "/bin/zsh -ilc \"pi; exec zsh -il\""
+    /// The command workspace panes launch with. It drops into `exec zsh -il`
+    /// when pi exits: pi owns the pane's process, so pi exiting (ctrl+D on
+    /// empty editor, crash) would otherwise close the pane. The exception is
+    /// exit code 42, which pi's slack-remote extension
+    /// (agent-config `pi/extensions/slack-remote.ts`, `SLACK_EXIT_CODE`) sets
+    /// on a Slack `exit` reply: the shell then exits and the tab closes.
+    /// `\$?` is escaped because Ghostty runs this string through `/bin/sh -c`.
+    static let piCommand = "/bin/zsh -ilc \"pi; [ \\$? -eq 42 ] || exec zsh -il\""
 
     /// The command a restored pane runs to reopen one exact pi session file
     /// (WorkspaceStore). Same shell wrapper as `piCommand`.
     static func piResumeCommand(sessionFile: String) -> String {
         let quoted = "'" + sessionFile.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        return "/bin/zsh -ilc \"pi --session \(quoted); exec zsh -il\""
+        return "/bin/zsh -ilc \"pi --session \(quoted); [ \\$? -eq 42 ] || exec zsh -il\""
     }
 
     /// ANSI keyCode -> base directory (1=18, 2=19, 3=20, 4=21, 0=29).
