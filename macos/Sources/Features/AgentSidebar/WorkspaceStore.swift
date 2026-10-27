@@ -348,6 +348,9 @@ final class WorkspaceStore {
         for (key, index) in pendingVerification {
             report.panes[index].status = "no-session-event"
             failedSurfaces.insert(key)
+            // The pane no longer counts as running that session, so a save
+            // drops it and the Slack launcher lets its thread go.
+            piSessions.removeValue(forKey: key)
             storeLog.error("restore unverified: pane \(index) sent no session_start within \(Self.verifyTimeout)s")
         }
         pendingVerification.removeAll()
@@ -365,7 +368,13 @@ final class WorkspaceStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        try! encoder.encode(report).write(to: Self.reportURL, options: .atomic)
+        // The report is a diagnostic; a failed write must not take Ghostty
+        // and every session in it down.
+        do {
+            try encoder.encode(report).write(to: Self.reportURL, options: .atomic)
+        } catch {
+            storeLog.error("restore-report.json write failed: \(String(describing: error), privacy: .public)")
+        }
     }
 
     // MARK: - Exit prompt

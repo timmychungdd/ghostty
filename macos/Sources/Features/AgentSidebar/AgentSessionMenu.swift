@@ -11,7 +11,8 @@ private let menuLog = Logger(subsystem: "com.mitchellh.ghostty", category: "sess
 /// session to `~/.pi/agent/live-sessions/<session id>.json` and deletes it on
 /// exit. This menu reads that folder when it opens; a file whose pid is dead
 /// belongs to a crashed pi and is removed. Each session can be shown (a tab
-/// in this app), moved into a new tab of this app, or ended.
+/// in this app), moved into a new tab of this app, or ended. Move is offered
+/// only for tmux and other-terminal sessions.
 ///
 /// Move = end the pi process with SIGTERM, wait for it to exit, then open a
 /// tab running `pi --session <file>`. One process per conversation, so the
@@ -37,6 +38,9 @@ final class AgentSessionMenu: NSObject, NSMenuDelegate {
         let sessionFile: String?
         let cwd: String
         let pid: Int32
+        /// When the pid started; a reused pid has a different one. Absent in
+        /// records written before 2026-10-26.
+        let pidStartedAt: Double?
         let host: Host
         let state: String // working | idle | needs-input | background
         let backgroundTasks: Int
@@ -93,6 +97,26 @@ final class AgentSessionMenu: NSObject, NSMenuDelegate {
         kill(pid, 0) == 0 || errno == EPERM
     }
 
+    /// Start time of a running pid in JavaScript milliseconds.
+    private static func startMs(_ pid: Int32) -> Double? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let start = info.kp_proc.p_starttime
+        return Double(start.tv_sec) * 1000 + Double(start.tv_usec) / 1000
+    }
+
+    /// The record's pi is still running. After a crash or reboot, macOS can
+    /// hand a dead pi's pid to another process; its start time differs.
+    /// Same check as pi/extensions/lib/live-registry.mjs.
+    private static func ownerAlive(_ record: Record) -> Bool {
+        guard isAlive(record.pid) else { return false }
+        guard let expected = record.pidStartedAt else { return true }
+        guard let start = startMs(record.pid) else { return false }
+        return abs(start - expected) < 2000
+    }
+
     /// Live records, plus the names of files that would not decode. Files of
     /// dead pids are removed.
     private func loadRecords() -> (records: [Record], unreadable: [String]) {
@@ -112,11 +136,11 @@ final class AgentSessionMenu: NSObject, NSMenuDelegate {
             let url = Self.registryDirectory.appendingPathComponent(name)
             do {
                 let record = try JSONDecoder().decode(Record.self, from: Data(contentsOf: url))
-                if Self.isAlive(record.pid) {
+                if Self.ownerAlive(record) {
                     records.append(record)
                 } else {
                     try fm.removeItem(at: url)
-                    menuLog.info("removed registry file of dead pid \(record.pid): \(name, privacy: .public)")
+                    menuLog.info("removed registry file of dead or reused pid \(record.pid): \(name, privacy: .public)")
                 }
             } catch {
                 menuLog.error("registry file \(name, privacy: .public) unreadable: \(error.localizedDescription, privacy: .public)")
@@ -254,7 +278,10 @@ final class AgentSessionMenu: NSObject, NSMenuDelegate {
 
         if entry.place == .thisGhostty {
             submenu.addItem(action("Show Tab", #selector(showTab(_:)), entry.window as Any))
-        } else {
+        } else if record.host.kind != "ghostty" {
+            // A pi in another Ghostty build (Debug beside the installed app)
+            // or a tab this app cannot find gets no Move: ending it would
+            // leave its own tab as a bare shell.
             let move = action("Move to Ghostty Tab", #selector(moveToTab(_:)), record)
             // pi writes its session file after the first exchange; before
             // that there is no conversation to resume.
@@ -392,8 +419,9 @@ final class AgentSessionMenu: NSObject, NSMenuDelegate {
             fail("Could not end \(record.title) (pid \(record.pid)) to move it: \(String(cString: strerror(errno)))")
             return
         }
-        // pi runs session_shutdown on SIGTERM (Slack posts "Session ended.",
-        // the registry file goes away), then exits.
+        // pi runs session_shutdown on SIGTERM (the registry file goes away),
+        // then exits. The launcher keeps the Slack thread through its
+        // two-cycle grace, and the new tab's pi reattaches to it.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let deadline = Date().addingTimeInterval(10)
             while Self.isAlive(record.pid), Date() < deadline { usleep(100_000) }
